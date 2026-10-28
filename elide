@@ -2,14 +2,16 @@
 """elide — truncate each input line to a max display width.
 
 Usage:
-  elide [--width N] [--ellipsis STR] [--words] [--pad] [FILE ...]
+  elide [--width N] [--width-file PATH] [--ellipsis STR] [--words] [--pad] [FILE ...]
 
 For each input line, truncate to max display width W (default 40).
 When a line is cut, append the ellipsis string (default '…');
 truncation reserves space so total display width <= W.
 --words cuts on a word boundary when one fits, else hard-cuts.
 --pad pads short lines with spaces to exactly W display width.
+--width-file reads W from the first non-empty line of PATH.
 Reads stdin when no file args are given, else reads each file in order.
+CRLF (\\r\\n) line endings are handled without emitting stray \\r.
 """
 
 import argparse
@@ -83,13 +85,61 @@ def elide_line(line, width, ellipsis, words, pad):
     return result
 
 
+def read_width_file(path, parser):
+    """Read max display width from first non-empty line of file. Exits 2 on error."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace", newline=None) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        parser.print_usage(sys.stderr)
+        print(f"elide: error: --width-file {path}: No such file or directory", file=sys.stderr)
+        sys.exit(2)
+    except IsADirectoryError:
+        parser.print_usage(sys.stderr)
+        print(f"elide: error: --width-file {path}: Is a directory", file=sys.stderr)
+        sys.exit(2)
+    except OSError as e:
+        parser.print_usage(sys.stderr)
+        print(f"elide: error: --width-file {path}: {e.strerror or e}", file=sys.stderr)
+        sys.exit(2)
+    first = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped != "":
+            first = stripped
+            break
+    if first is None:
+        parser.print_usage(sys.stderr)
+        print(f"elide: error: --width-file {path}: file is empty", file=sys.stderr)
+        sys.exit(2)
+    try:
+        width = int(first, 10)
+    except (ValueError, TypeError):
+        parser.print_usage(sys.stderr)
+        print("elide: error: --width-file must contain a positive integer", file=sys.stderr)
+        sys.exit(2)
+    return width
+
+
+def strip_cr(line):
+    """Remove a single trailing CR left over from CRLF input. Defensive: splitlines()
+    plus universal newlines already handle most cases, but this covers lone-CR
+    edges without touching intentional content."""
+    if line.endswith("\r"):
+        return line[:-1]
+    return line
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(
         prog="elide",
         description="Truncate each input line to max display width.",
     )
-    p.add_argument("--width", default=str(DEFAULT_WIDTH),
-                   help="max display width per line (default 40)")
+    width_group = p.add_mutually_exclusive_group()
+    width_group.add_argument("--width", default=None,
+                       help="max display width per line (default 40)")
+    width_group.add_argument("--width-file", default=None, metavar="PATH",
+                       help="read max display width from first non-empty line of file at PATH")
     p.add_argument("--ellipsis", default=DEFAULT_ELLIPSIS,
                    help="trailing marker when a line is cut (default '…')")
     p.add_argument("--words", action="store_true",
@@ -100,15 +150,23 @@ def parse_args(argv):
                    help="input files (default: stdin)")
     args = p.parse_args(argv)
 
-    try:
-        width = int(args.width, 10) if isinstance(args.width, str) else int(args.width)
-    except (ValueError, TypeError):
-        p.print_usage(sys.stderr)
-        print("elide: error: --width must be a positive integer", file=sys.stderr)
-        sys.exit(2)
+    if args.width_file is not None:
+        width = read_width_file(args.width_file, p)
+    elif args.width is not None:
+        try:
+            width = int(args.width, 10) if isinstance(args.width, str) else int(args.width)
+        except (ValueError, TypeError):
+            p.print_usage(sys.stderr)
+            print("elide: error: --width must be a positive integer", file=sys.stderr)
+            sys.exit(2)
+    else:
+        width = DEFAULT_WIDTH
     if width <= 0:
         p.print_usage(sys.stderr)
-        print("elide: error: --width must be a positive integer", file=sys.stderr)
+        if args.width_file is not None:
+            print("elide: error: --width-file must contain a positive integer", file=sys.stderr)
+        else:
+            print("elide: error: --width must be a positive integer", file=sys.stderr)
         sys.exit(2)
     if display_width(args.ellipsis) > width:
         p.print_usage(sys.stderr)
@@ -123,13 +181,13 @@ def iter_lines(files):
     exit_code = 0
     if not files:
         for line in sys.stdin.read().splitlines():
-            yield line
+            yield strip_cr(line)
         return
     for path in files:
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, "r", encoding="utf-8", errors="replace", newline=None) as f:
                 for line in f.read().splitlines():
-                    yield line
+                    yield strip_cr(line)
         except FileNotFoundError:
             print(f"elide: {path}: No such file or directory", file=sys.stderr)
             exit_code = 1

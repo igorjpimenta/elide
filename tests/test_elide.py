@@ -143,6 +143,67 @@ class TestElide(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("ellipsis", r.stderr.lower())
 
+    def test_width_file_matches_width(self):
+        with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False) as f:
+            f.write("5\n")
+            path = f.name
+        try:
+            r_file = run(["--width-file", path], stdin_data="hello world\n")
+            r_flag = run(["--width", "5"], stdin_data="hello world\n")
+            self.assertEqual(r_file.returncode, 0)
+            self.assertEqual(r_file.stdout, r_flag.stdout)
+            self.assertEqual(r_file.stdout, "hell…\n")
+        finally:
+            os.unlink(path)
+
+    def test_width_file_skips_blank_lines(self):
+        with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False) as f:
+            f.write("\n\n  3\n")
+            path = f.name
+        try:
+            r = run(["--width-file", path], stdin_data="hello\n")
+            self.assertEqual((r.returncode, r.stdout), (0, "he…\n"))
+        finally:
+            os.unlink(path)
+
+    def test_width_file_missing_exits_2(self):
+        r = run(["--width-file", "/nonexistent-elide-width"], stdin_data="hi\n")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--width-file", r.stderr)
+
+    def test_width_file_invalid_exits_2(self):
+        with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False) as f:
+            f.write("abc\n")
+            path = f.name
+        try:
+            r = run(["--width-file", path], stdin_data="hi\n")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("--width-file", r.stderr)
+        finally:
+            os.unlink(path)
+
+    def test_crlf_stdin_no_stray_cr(self):
+        r = subprocess.run(
+            [sys.executable, ELIDE, "--width", "5"],
+            input=b"hello world\r\nshort\r\n",
+            capture_output=True,
+        )
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn(b"\r", r.stdout)
+        self.assertEqual(r.stdout, "hell…\nshort\n".encode("utf-8"))
+
+    def test_crlf_file_no_stray_cr(self):
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as f:
+            f.write(b"hello world\r\nshort\r\n")
+            path = f.name
+        try:
+            r = run(["--width", "5", path])
+            self.assertEqual(r.returncode, 0)
+            self.assertNotIn("\r", r.stdout)
+            self.assertEqual(r.stdout, "hell…\nshort\n")
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()
