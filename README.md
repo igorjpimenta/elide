@@ -24,18 +24,30 @@ No pip install, no dependencies.
 ## Usage
 
 ```
-elide [--width N] [--ellipsis STR] [--words] [--pad] [FILE ...]
+elide [--width N | --width-file PATH] [--ellipsis STR] [--words] [--pad]
+      [FILE ...]
 ```
 
 With no `FILE` arguments, `elide` reads stdin. With one or more `FILE`
 arguments, it reads each file in order and writes all output lines to
 stdout.
 
+### `--width-file PATH`
+
+Reads the max display width from the first non-empty line of the file at
+`PATH`, so the width can be changed without editing the command line.
+Leading blank lines are skipped and the line is stripped, so trailing
+whitespace or a CRLF ending on that line are fine. Takes the same
+validation as `--width` (positive integer) and is mutually exclusive
+with it (exit 2 if both are given). Errors — file missing, directory,
+empty, contents not a positive integer — exit 2.
+
 ## Flag reference
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--width N` | `40` | Max display width per line. Exit 2 if not an integer, `<= 0`, or narrower than the ellipsis's display width. |
+| `--width-file PATH` | none | Max display width read from the first non-empty line of the file at `PATH` (stripped, CRLF-safe). Mutually exclusive with `--width`. Errors exit 2. |
 | `--ellipsis STR` | `…` | String appended when a line is cut. Exit 2 if its display width exceeds `--width`. An empty string is valid. |
 | `--words` | off | Cut on a word boundary when one fits inside the width. |
 | `--pad` | off | Pad short lines with spaces to exactly `--width` columns. |
@@ -85,6 +97,17 @@ printf 'こんにちはworld\n' | elide --width 9   # "こんにち…"
 
 # 7. Custom ellipsis string
 printf 'hello world\n' | elide --width 8 --ellipsis '...'   # "hello..."
+
+# 8. Width read from a file (first non-empty line: "10")
+printf '10\n' > /tmp/elide-width.txt
+printf 'abcdefghij\n' | elide --width-file /tmp/elide-width.txt   # "abcdefghij"
+
+# 9. Width file skips leading blank lines
+printf '\n\n5\n' > /tmp/elide-width2.txt
+printf 'hello world\n' | elide --width-file /tmp/elide-width2.txt   # "hell…"
+
+# 10. CRLF input: cut without a stray CR
+printf 'hello world\r\nsecond\r\n' | elide --width 5   # "hell…\nseco…"
 ```
 
 ## `--pad` and `--words` together
@@ -92,13 +115,48 @@ printf 'hello world\n' | elide --width 8 --ellipsis '...'   # "hello..."
 In word-boundary mode the line may end shorter than expected even
 before padding; `--pad` fills exactly to `--width` regardless.
 
+## CRLF handling
+
+CRLF (`\r\n`) input never leaks a `\r` into the output. Lines pass
+through, cut, or pad identically to LF-only input:
+
+```text
+$ printf 'hello world\r\nsecond\r\n' | elide --width 5
+hell…
+seco…
+$ printf 'hello world\r\n' | elide --width 12 --pad
+hello world 
+```
+
+## Width-file errors
+
+All exit 2. A usage block precedes each error message on stderr (shown
+for the last example). Error lines observed verbatim:
+
+```text
+$ printf 'abc\n' > w5.txt && printf 'hello\n' | elide --width-file w5.txt
+elide: error: --width-file must contain a positive integer
+$ elide --width-file /tmp/elide-width-empty.txt            # file blank
+elide: error: --width-file /tmp/elide-width-empty.txt: file is empty
+$ elide --width-file /tmp/missing-width.txt
+elide: error: --width-file /tmp/missing-width.txt: No such file or directory
+$ elide --width 5 --width-file /tmp/elide-width.txt
+usage: elide [-h] [--width WIDTH | --width-file PATH] [--ellipsis ELLIPSIS]
+             [--words] [--pad]
+             [FILE ...]
+elide: error: argument --width-file: not allowed with argument --width
+```
+
 ## Exit codes
 
 - `0` — success.
 - `1` — a file could not be read (missing, directory, OS error);
   stderr names each failing file, other files still process.
-- `2` — invalid arguments: `--width` not an integer, `<= 0`, or the
-  ellipsis wider than `--width` by display width.
+- `2` — invalid arguments: `--width` (or the first line of
+  `--width-file`) not an integer, `<= 0`, or the ellipsis wider than
+  `--width` by display width; also on mutually exclusive
+  `--width` + `--width-file`, and width-file read errors
+  (missing, directory, empty) — see Width-file errors above.
 
 ```sh
 $ elide --width abc
