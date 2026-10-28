@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""elide — truncate each input line to a max display width.
+
+Usage:
+  elide [--width N] [--ellipsis STR] [--words] [--pad] [FILE ...]
+
+For each input line, truncate to max display width W (default 40).
+When a line is cut, append the ellipsis string (default '…');
+truncation reserves space so total display width <= W.
+--words cuts on a word boundary when one fits, else hard-cuts.
+--pad pads short lines with spaces to exactly W display width.
+Reads stdin when no file args are given, else reads each file in order.
+"""
+
+import argparse
+import sys
+import unicodedata
+
+DEFAULT_WIDTH = 40
+DEFAULT_ELLIPSIS = "…"
+
+
+def display_width(s):
+    """Best-effort terminal display width (wcwidth-like, stdlib only)."""
+    w = 0
+    for ch in s:
+        if unicodedata.combining(ch):
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Mn", "Me"):
+            continue
+        if ord(ch) < 32 or ord(ch) == 127:
+            continue
+        eaw = unicodedata.east_asian_width(ch)
+        if eaw in ("W", "F"):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def take_width(s, budget):
+    """Return longest prefix of s with display width <= budget."""
+    out = []
+    w = 0
+    for ch in s:
+        if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me"):
+            out.append(ch)
+            continue
+        if ord(ch) < 32 or ord(ch) == 127:
+            continue
+        eaw = unicodedata.east_asian_width(ch)
+        cw = 2 if eaw in ("W", "F") else 1
+        if w + cw > budget:
+            break
+        out.append(ch)
+        w += cw
+    return "".join(out)
+
+
+def elide_line(line, width, ellipsis, words, pad):
+    ell_w = display_width(ellipsis)
+    line_w = display_width(line)
+    if line_w <= width:
+        if pad and line_w < width:
+            return line + " " * (width - line_w)
+        return line
+    budget = width - ell_w
+    # budget >= 1 guaranteed by validation (ellipsis narrower than width
+    # implies budget >= 1 since widths are integers).
+    prefix = take_width(line, budget)
+    if words:
+        idx = max(prefix.rfind(" "), prefix.rfind("\t"))
+        if idx > 0:
+            candidate = prefix[:idx].rstrip(" \t")
+            if candidate:
+                prefix = candidate
+    result = prefix + ellipsis
+    if pad:
+        rw = display_width(result)
+        if rw < width:
+            result += " " * (width - rw)
+    return result
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        prog="elide",
+        description="Truncate each input line to max display width.",
+    )
+    p.add_argument("--width", default=str(DEFAULT_WIDTH),
+                   help="max display width per line (default 40)")
+    p.add_argument("--ellipsis", default=DEFAULT_ELLIPSIS,
+                   help="trailing marker when a line is cut (default '…')")
+    p.add_argument("--words", action="store_true",
+                   help="cut on a word boundary instead of mid-word")
+    p.add_argument("--pad", action="store_true",
+                   help="pad short lines with spaces to exactly WIDTH")
+    p.add_argument("files", nargs="*", metavar="FILE",
+                   help="input files (default: stdin)")
+    args = p.parse_args(argv)
+
+    try:
+        width = int(args.width, 10) if isinstance(args.width, str) else int(args.width)
+    except (ValueError, TypeError):
+        p.print_usage(sys.stderr)
+        print("elide: error: --width must be a positive integer", file=sys.stderr)
+        sys.exit(2)
+    if width <= 0:
+        p.print_usage(sys.stderr)
+        print("elide: error: --width must be a positive integer", file=sys.stderr)
+        sys.exit(2)
+    if display_width(args.ellipsis) > width:
+        p.print_usage(sys.stderr)
+        print("elide: error: ellipsis display width exceeds --width", file=sys.stderr)
+        sys.exit(2)
+    args.width = width
+    return args
+
+
+def iter_lines(files):
+    """Yield input lines. Returns exit code (0 ok, 1 on missing-file error)."""
+    exit_code = 0
+    if not files:
+        for line in sys.stdin.read().splitlines():
+            yield line
+        return
+    for path in files:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f.read().splitlines():
+                    yield line
+        except FileNotFoundError:
+            print(f"elide: {path}: No such file or directory", file=sys.stderr)
+            exit_code = 1
+        except IsADirectoryError:
+            print(f"elide: {path}: Is a directory", file=sys.stderr)
+            exit_code = 1
+        except OSError as e:
+            print(f"elide: {path}: {e.strerror or e}", file=sys.stderr)
+            exit_code = 1
+    # communicate failures via attribute
+    iter_lines.exit_code = exit_code
+
+
+iter_lines.exit_code = 0
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    out = sys.stdout
+    for line in iter_lines(args.files):
+        out.write(elide_line(line, args.width, args.ellipsis,
+                             args.words, args.pad) + "\n")
+    return iter_lines.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
